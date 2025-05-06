@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -17,18 +19,20 @@ const (
 	paddleWidth = 20
 	paddleHeight = 80
 	ballRadius = 10
-	paddleSpeed = 5
-	ballSpeedX = 5
-	ballSpeedY = 5
-)
+	paddleSpeed = 50
+	ballSpeedX = 50
+	ballSpeedY = 50
 
-const (
 	ballXDivisions = 3
 	ballYDivisions = 3
 	paddleYDivisions = 3
-)
 
-const (
+	learningRate = 0.1
+	discountRate = 0.9
+	initialEpsilon = 0.1
+	epsilonDecayRate = 0.001
+	minEpsilon = 0.01
+
 	velXRight = 1
 	velXLeft = -1
 	velYUp = 1
@@ -165,18 +169,35 @@ func (g *Game) getState(paddleID int) int {
 		velYState = 1
 	}
 
+	var realteivePaddleYDiscrete int
+	var paddleYCenter float64
+	if paddleID == 1 {
+		paddleYCenter = g.paddle1Y + paddleHeight/2
+	} else {
+		paddleYCenter = g.paddle2Y + paddleHeight/2
+	}
+	relativeY := g.ballY - paddleYCenter
+	if relativeY < -paddleHeight/2 {
+		realteivePaddleYDiscrete = 0
+	} else if relativeY > paddleHeight/2 {
+		realteivePaddleYDiscrete = 2
+	} else {
+		realteivePaddleYDiscrete = 1
+	}
+
 	stateID := ballXDiscrete + ballYDiscrete*ballXDivisions +
 	  paddleYDiscrete*ballXDivisions*ballYDivisions +
 	  velXState*ballXDivisions*ballYDivisions*paddleYDivisions +
-	  velYState*ballXDivisions*ballYDivisions*paddleYDivisions*2
+	  velYState*ballXDivisions*ballYDivisions*paddleYDivisions*2 +
+	  realteivePaddleYDiscrete*ballXDivisions*ballYDivisions*paddleYDivisions*2*3
 
 	return stateID
 }
 
 func NewGame() *Game {
-	agent1 := NewAgent(1, 0.1, 0.9, 0.1)
-	agent2 := NewAgent(2, 0.1, 0.9, 0.1)
-	numStates := ballXDivisions * ballYDivisions * paddleYDivisions * 2 * 2
+	agent1 := NewAgent(1, learningRate, discountRate, initialEpsilon)
+	agent2 := NewAgent(2, learningRate, discountRate, initialEpsilon)
+	numStates := ballXDivisions * ballYDivisions * paddleYDivisions * 2 * 2 * 3
 	agent1.initializeQTable(numStates, 3)
 	agent2.initializeQTable(numStates, 3)
 
@@ -272,9 +293,9 @@ func (g *Game) Update() error {
 
 func (g *Game) resetBall() {
 	g.episodeCount++
-	if g.episodeCount%100 == 0 && g.agent1.epsilon > 0.01 && g.agent2.epsilon > 0.01 {
-		g.agent1.epsilon -= 0.01
-		g.agent2.epsilon -= 0.01
+	if g.episodeCount%100 == 0 && g.agent1.epsilon > minEpsilon && g.agent2.epsilon > minEpsilon {
+		g.agent1.epsilon -= epsilonDecayRate
+		g.agent2.epsilon -= epsilonDecayRate
 	}
 	g.ballX = float64(screenWidth/2)
 	g.ballY = float64(screenHight/2)
@@ -380,15 +401,68 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 	return screenWidth, screenHight
 }
 
+func (a *Agent) SaveQTable(filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(a.qTable); err != nil {
+		return fmt.Errorf("failed to encode Q-table: %w", err)
+	}
+	fmt.Printf("Q-table for agent %d saved to %s\n", a.paddleID, filename)
+
+	return nil
+}
+
+func (a *Agent) LoadQTable(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Q-table file %s not found for agent %d. Starting with an empty Q-table.\n", filename, a.paddleID)
+			return nil
+		}
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&a.qTable); err != nil {
+		return fmt.Errorf("failed to decode Q-table: %w", err)
+	}
+	fmt.Printf("Q-table for agent %d loaded from %s\n", a.paddleID, filename)
+	return nil
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	game := NewGame()
+
+	err1 := game.agent1.LoadQTable("agent1_q_table.json")
+	if err1 != nil {
+		log.Println("Error loading Q-table for agent 1: %w", err1)
+	}
+	err2 := game.agent2.LoadQTable("agent2_q_table.json")
+	if err2 != nil {
+		log.Println("Error loading Q-table for agent 2: %w", err2)
+	}
 
 	ebiten.SetWindowSize(screenWidth, screenHight)
 	ebiten.SetWindowTitle("Pong AI")
 
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
+	}
+
+	errSave1 := game.agent1.SaveQTable("agent1_q_table.json")
+	if errSave1 != nil {
+		log.Println("Error saving Q-table for agent 1: %w", errSave1)
+	}
+	errSave2 := game.agent2.SaveQTable("agent2_q_table.json")
+	if errSave2 != nil {
+		log.Println("Error saving Q-table for agent 2: %w", errSave2)
 	}
 }
